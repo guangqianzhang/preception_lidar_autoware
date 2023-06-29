@@ -15,7 +15,7 @@ find_package(catkin REQUIRED COMPONENTS
         )
 
 find_package(OpenMP)
-find_package(OpenCV REQUIRED)
+find_package(OpenCV 4 REQUIRED)
 
 set(CMAKE_CXX_FLAGS "-O2 -Wall ${CMAKE_CXX_FLAGS}")
 

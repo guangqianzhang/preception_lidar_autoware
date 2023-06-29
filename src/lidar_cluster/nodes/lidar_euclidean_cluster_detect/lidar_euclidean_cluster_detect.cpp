@@ -51,14 +51,12 @@
 #include "autoware_msgs/DetectedObject.h"
 #include "autoware_msgs/DetectedObjectArray.h"
 
-
-
 #include <tf/tf.h>
 
 #include <yaml-cpp/yaml.h>
 
-#include <opencv/cv.h>
-#include <opencv/highgui.h>
+#include <opencv2/opencv.hpp>
+#include <opencv2/highgui.hpp>
 #include <opencv2/core/version.hpp>
 
 #if (CV_MAJOR_VERSION == 3)
@@ -68,6 +66,7 @@
 #else
 
 // #include <opencv2/contrib/contrib.hpp>
+
 #include <autoware_msgs/DetectedObjectArray.h>
 
 #endif
@@ -81,9 +80,9 @@
 #endif
 
 #define __APP_NAME__ "euclidean_clustering"
-
+#include "gencolors.cpp"
 using namespace cv;
-
+using namespace std;
 ros::Publisher _pub_cluster_cloud;
 ros::Publisher _pub_ground_cloud;
 ros::Publisher _centroid_pub;
@@ -106,7 +105,7 @@ static int _cluster_size_min;
 static int _cluster_size_max;
 static const double _initial_quat_w = 1.0;
 
-static bool _remove_ground;  // only ground
+static bool _remove_ground; // only ground
 
 static bool _using_sensor_cloud;
 static bool _use_diffnormals;
@@ -117,11 +116,15 @@ static double _clip_max_height;
 static bool _keep_lanes;
 static double _keep_lane_left_distance;
 static double _keep_lane_right_distance;
+static double _keep_ylane_left_distance;
+static double _keep_ylane_right_distance;
 
 static double _max_boundingbox_side;
 static double _remove_points_upto;
 static double _cluster_merge_threshold;
 static double _clustering_distance;
+
+static double _floor_distance_;
 
 static bool _use_gpu;
 static std::chrono::system_clock::time_point _start, _end;
@@ -129,7 +132,6 @@ static std::chrono::system_clock::time_point _start, _end;
 std::vector<std::vector<geometry_msgs::Point>> _way_area_points;
 std::vector<cv::Scalar> _colors;
 pcl::PointCloud<pcl::PointXYZ> _sensor_cloud;
-
 
 static bool _use_multiple_thres;
 std::vector<double> _clustering_distances;
@@ -139,7 +141,6 @@ tf::StampedTransform *_transform;
 tf::StampedTransform *_velodyne_output_transform;
 tf::TransformListener *_transform_listener;
 
-
 tf::StampedTransform findTransform(const std::string &in_target_frame, const std::string &in_source_frame)
 {
   tf::StampedTransform transform;
@@ -147,7 +148,7 @@ tf::StampedTransform findTransform(const std::string &in_target_frame, const std
   return transform;
 }
 
-geometry_msgs::Point transformPoint(const geometry_msgs::Point& point, const tf::Transform& tf)
+geometry_msgs::Point transformPoint(const geometry_msgs::Point &point, const tf::Transform &tf)
 {
   tf::Point tf_point;
   tf::pointMsgToTF(point, tf_point);
@@ -164,23 +165,23 @@ void transformBoundingBox(const jsk_recognition_msgs::BoundingBox &in_boundingbo
                           jsk_recognition_msgs::BoundingBox &out_boundingbox, const std::string &in_target_frame,
                           const std_msgs::Header &in_header)
 {
-    geometry_msgs::PoseStamped pose_in, pose_out;
-    pose_in.header = in_header;
-    pose_in.pose = in_boundingbox.pose;
-    try
-    {
-        _transform_listener->transformPose(in_target_frame, ros::Time(), pose_in, in_header.frame_id, pose_out);
-    }
-    catch (tf::TransformException &ex)
-    {
-        ROS_ERROR("transformBoundingBox: %s", ex.what());
-    }
-    out_boundingbox.pose = pose_out.pose;
-    out_boundingbox.header = in_header;
-    out_boundingbox.header.frame_id = in_target_frame;
-    out_boundingbox.dimensions = in_boundingbox.dimensions;
-    out_boundingbox.value = in_boundingbox.value;
-    out_boundingbox.label = in_boundingbox.label;
+  geometry_msgs::PoseStamped pose_in, pose_out;
+  pose_in.header = in_header;
+  pose_in.pose = in_boundingbox.pose;
+  try
+  {
+    _transform_listener->transformPose(in_target_frame, ros::Time(), pose_in, in_header.frame_id, pose_out);
+  }
+  catch (tf::TransformException &ex)
+  {
+    ROS_ERROR("transformBoundingBox: %s", ex.what());
+  }
+  out_boundingbox.pose = pose_out.pose;
+  out_boundingbox.header = in_header;
+  out_boundingbox.header.frame_id = in_target_frame;
+  out_boundingbox.dimensions = in_boundingbox.dimensions;
+  out_boundingbox.value = in_boundingbox.value;
+  out_boundingbox.label = in_boundingbox.label;
 }
 
 void publishDetectedObjects(const autoware_msgs::CloudClusterArray &in_clusters)
@@ -235,10 +236,10 @@ void publishCloudClusters(const ros::Publisher *in_publisher, const autoware_msg
         cluster_transformed.dimensions = i->dimensions;
         cluster_transformed.eigen_values = i->eigen_values;
         cluster_transformed.eigen_vectors = i->eigen_vectors;
-        
+
         cluster_transformed.convex_hull = i->convex_hull;
         cluster_transformed.bounding_box.pose.position = i->bounding_box.pose.position;
-        if(_pose_estimation)
+        if (_pose_estimation)
         {
           cluster_transformed.bounding_box.pose.orientation = i->bounding_box.pose.orientation;
         }
@@ -255,7 +256,8 @@ void publishCloudClusters(const ros::Publisher *in_publisher, const autoware_msg
     }
     in_publisher->publish(clusters_transformed);
     publishDetectedObjects(clusters_transformed);
-  } else
+  }
+  else
   {
     in_publisher->publish(in_clusters);
     publishDetectedObjects(in_clusters);
@@ -288,7 +290,8 @@ void publishCentroids(const ros::Publisher *in_publisher, const autoware_msgs::C
       }
     }
     in_publisher->publish(centroids_transformed);
-  } else
+  }
+  else
   {
     in_publisher->publish(in_centroids);
   }
@@ -323,6 +326,32 @@ void keepLanePoints(const pcl::PointCloud<pcl::PointXYZ>::Ptr in_cloud_ptr,
     current_point.y = in_cloud_ptr->points[i].y;
     current_point.z = in_cloud_ptr->points[i].z;
 
+    if (current_point.x > (in_left_lane_threshold) || current_point.x < -1.0 * in_right_lane_threshold)
+    {
+      far_indices->indices.push_back(i);
+    }
+  }
+  out_cloud_ptr->points.clear();
+  pcl::ExtractIndices<pcl::PointXYZ> extract;
+  extract.setInputCloud(in_cloud_ptr);
+  extract.setIndices(far_indices);
+  extract.setNegative(true); // true removes the indices, false leaves only the indices
+  extract.filter(*out_cloud_ptr);
+}
+void keep_y_Points(const pcl::PointCloud<pcl::PointXYZ>::Ptr in_cloud_ptr,
+                    pcl::PointCloud<pcl::PointXYZ>::Ptr out_cloud_ptr, float in_left_lane_threshold = 1.5,
+                    float in_right_lane_threshold = 1.5)
+{
+
+  // cout<<"yleft:"<<in_left_lane_threshold<<"right:"<<in_right_lane_threshold<<endl;
+  pcl::PointIndices::Ptr far_indices(new pcl::PointIndices);
+  for (unsigned int i = 0; i < in_cloud_ptr->points.size(); i++)
+  {
+    pcl::PointXYZ current_point;
+    current_point.x = in_cloud_ptr->points[i].x;
+    current_point.y = in_cloud_ptr->points[i].y;
+    current_point.z = in_cloud_ptr->points[i].z;
+
     if (current_point.y > (in_left_lane_threshold) || current_point.y < -1.0 * in_right_lane_threshold)
     {
       far_indices->indices.push_back(i);
@@ -332,7 +361,7 @@ void keepLanePoints(const pcl::PointCloud<pcl::PointXYZ>::Ptr in_cloud_ptr,
   pcl::ExtractIndices<pcl::PointXYZ> extract;
   extract.setInputCloud(in_cloud_ptr);
   extract.setIndices(far_indices);
-  extract.setNegative(true);  // true removes the indices, false leaves only the indices
+  extract.setNegative(true); // true removes the indices, false leaves only the indices
   extract.filter(*out_cloud_ptr);
 }
 
@@ -343,6 +372,7 @@ std::vector<ClusterPtr> clusterAndColorGpu(const pcl::PointCloud<pcl::PointXYZ>:
                                            autoware_msgs::Centroids &in_out_centroids,
                                            double in_max_cluster_distance = 0.5)
 {
+  // cout<<"USE GPU !!!!!!!"<<endl;
   std::vector<ClusterPtr> clusters;
 
   // Convert input point cloud to vectors of x, y, and z
@@ -354,9 +384,9 @@ std::vector<ClusterPtr> clusterAndColorGpu(const pcl::PointCloud<pcl::PointXYZ>:
 
   float *tmp_x, *tmp_y, *tmp_z;
 
-  tmp_x = (float *) malloc(sizeof(float) * size);
-  tmp_y = (float *) malloc(sizeof(float) * size);
-  tmp_z = (float *) malloc(sizeof(float) * size);
+  tmp_x = (float *)malloc(sizeof(float) * size);
+  tmp_y = (float *)malloc(sizeof(float) * size);
+  tmp_z = (float *)malloc(sizeof(float) * size);
 
   for (int i = 0; i < size; i++)
   {
@@ -381,8 +411,8 @@ std::vector<ClusterPtr> clusterAndColorGpu(const pcl::PointCloud<pcl::PointXYZ>:
   for (auto it = cluster_indices.begin(); it != cluster_indices.end(); it++)
   {
     ClusterPtr cluster(new Cluster());
-    cluster->SetCloud(in_cloud_ptr, it->points_in_cluster, _velodyne_header, k, (int) _colors[k].val[0],
-                      (int) _colors[k].val[1], (int) _colors[k].val[2], "", _pose_estimation);
+    cluster->SetCloud(in_cloud_ptr, it->points_in_cluster, _velodyne_header, k, (int)_colors[k].val[0],
+                      (int)_colors[k].val[1], (int)_colors[k].val[2], "", _pose_estimation);
     clusters.push_back(cluster);
 
     k++;
@@ -420,7 +450,7 @@ std::vector<ClusterPtr> clusterAndColor(const pcl::PointCloud<pcl::PointXYZ>::Pt
 
   // perform clustering on 2d cloud
   pcl::EuclideanClusterExtraction<pcl::PointXYZ> ec;
-  ec.setClusterTolerance(in_max_cluster_distance);  //
+  ec.setClusterTolerance(in_max_cluster_distance); //
   ec.setMinClusterSize(_cluster_size_min);
   ec.setMaxClusterSize(_cluster_size_max);
   ec.setSearchMethod(tree);
@@ -440,9 +470,9 @@ std::vector<ClusterPtr> clusterAndColor(const pcl::PointCloud<pcl::PointXYZ>::Pt
   for (auto it = cluster_indices.begin(); it != cluster_indices.end(); ++it)
   {
     ClusterPtr cluster(new Cluster());
-    cluster->SetCloud(in_cloud_ptr, it->indices, _velodyne_header, k, (int) _colors[k].val[0],
-                      (int) _colors[k].val[1],
-                      (int) _colors[k].val[2], "", _pose_estimation);
+    cluster->SetCloud(in_cloud_ptr, it->indices, _velodyne_header, k, (int)_colors[k].val[0],
+                      (int)_colors[k].val[1],
+                      (int)_colors[k].val[2], "", _pose_estimation);
     clusters.push_back(cluster);
 
     k++;
@@ -497,8 +527,8 @@ void mergeClusters(const std::vector<ClusterPtr> &in_clusters, std::vector<Clust
   {
     pcl::copyPointCloud(sum_cloud, mono_cloud);
     merged_cluster->SetCloud(mono_cloud.makeShared(), indices, _velodyne_header, current_index,
-                             (int) _colors[current_index].val[0], (int) _colors[current_index].val[1],
-                             (int) _colors[current_index].val[2], "", _pose_estimation);
+                             (int)_colors[current_index].val[0], (int)_colors[current_index].val[1],
+                             (int)_colors[current_index].val[2], "", _pose_estimation);
     out_clusters.push_back(merged_cluster);
   }
 }
@@ -566,16 +596,18 @@ void segmentByDistance(const pcl::PointCloud<pcl::PointXYZ>::Ptr in_cloud_ptr,
     {
       all_clusters = clusterAndColorGpu(cloud_ptr, out_cloud_ptr, in_out_centroids,
                                         _clustering_distance);
-    } else
+    }
+    else
     {
       all_clusters =
-        clusterAndColor(cloud_ptr, out_cloud_ptr, in_out_centroids, _clustering_distance);
+          clusterAndColor(cloud_ptr, out_cloud_ptr, in_out_centroids, _clustering_distance);
     }
 #else
     all_clusters =
         clusterAndColor(cloud_ptr, out_cloud_ptr, in_out_centroids, _clustering_distance);
 #endif
-  } else
+  }
+  else
   {
     std::vector<pcl::PointCloud<pcl::PointXYZ>::Ptr> cloud_segments_array(5);
     for (unsigned int i = 0; i < cloud_segments_array.size(); i++)
@@ -600,16 +632,16 @@ void segmentByDistance(const pcl::PointCloud<pcl::PointXYZ>::Ptr in_cloud_ptr,
       else if (origin_distance < _clustering_ranges[1])
       {
         cloud_segments_array[1]->points.push_back(current_point);
-
-      }else if (origin_distance < _clustering_ranges[2])
+      }
+      else if (origin_distance < _clustering_ranges[2])
       {
         cloud_segments_array[2]->points.push_back(current_point);
-
-      }else if (origin_distance < _clustering_ranges[3])
+      }
+      else if (origin_distance < _clustering_ranges[3])
       {
         cloud_segments_array[3]->points.push_back(current_point);
-
-      }else
+      }
+      else
       {
         cloud_segments_array[4]->points.push_back(current_point);
       }
@@ -623,7 +655,8 @@ void segmentByDistance(const pcl::PointCloud<pcl::PointXYZ>::Ptr in_cloud_ptr,
       {
         local_clusters = clusterAndColorGpu(cloud_segments_array[i], out_cloud_ptr,
                                             in_out_centroids, _clustering_distances[i]);
-      } else
+      }
+      else
       {
         local_clusters = clusterAndColor(cloud_segments_array[i], out_cloud_ptr,
                                          in_out_centroids, _clustering_distances[i]);
@@ -652,53 +685,53 @@ void segmentByDistance(const pcl::PointCloud<pcl::PointXYZ>::Ptr in_cloud_ptr,
   else
     final_clusters = mid_clusters;
 
-    // Get final PointCloud to be published
-    for (unsigned int i = 0; i < final_clusters.size(); i++)
+  // Get final PointCloud to be published
+  for (unsigned int i = 0; i < final_clusters.size(); i++)
+  {
+    *out_cloud_ptr = *out_cloud_ptr + *(final_clusters[i]->GetCloud());
+
+    jsk_recognition_msgs::BoundingBox bounding_box = final_clusters[i]->GetBoundingBox();
+    geometry_msgs::PolygonStamped polygon = final_clusters[i]->GetPolygon();
+    jsk_rviz_plugins::Pictogram pictogram_cluster;
+    pictogram_cluster.header = _velodyne_header;
+
+    // PICTO
+    pictogram_cluster.mode = pictogram_cluster.STRING_MODE;
+    pictogram_cluster.pose.position.x = final_clusters[i]->GetMaxPoint().x;
+    pictogram_cluster.pose.position.y = final_clusters[i]->GetMaxPoint().y;
+    pictogram_cluster.pose.position.z = final_clusters[i]->GetMaxPoint().z;
+    tf::Quaternion quat(0.0, -0.7, 0.0, 0.7);
+    tf::quaternionTFToMsg(quat, pictogram_cluster.pose.orientation);
+    pictogram_cluster.size = 4;
+    std_msgs::ColorRGBA color;
+    color.a = 1;
+    color.r = 1;
+    color.g = 1;
+    color.b = 1;
+    pictogram_cluster.color = color;
+    pictogram_cluster.character = std::to_string(i);
+    // PICTO
+
+    // pcl::PointXYZ min_point = final_clusters[i]->GetMinPoint();
+    // pcl::PointXYZ max_point = final_clusters[i]->GetMaxPoint();
+    pcl::PointXYZ center_point = final_clusters[i]->GetCentroid();
+    geometry_msgs::Point centroid;
+    centroid.x = center_point.x;
+    centroid.y = center_point.y;
+    centroid.z = center_point.z;
+    bounding_box.header = _velodyne_header;
+    polygon.header = _velodyne_header;
+
+    if (final_clusters[i]->IsValid())
     {
-      *out_cloud_ptr = *out_cloud_ptr + *(final_clusters[i]->GetCloud());
 
-      jsk_recognition_msgs::BoundingBox bounding_box = final_clusters[i]->GetBoundingBox();
-      geometry_msgs::PolygonStamped polygon = final_clusters[i]->GetPolygon();
-      jsk_rviz_plugins::Pictogram pictogram_cluster;
-      pictogram_cluster.header = _velodyne_header;
+      in_out_centroids.points.push_back(centroid);
 
-      // PICTO
-      pictogram_cluster.mode = pictogram_cluster.STRING_MODE;
-      pictogram_cluster.pose.position.x = final_clusters[i]->GetMaxPoint().x;
-      pictogram_cluster.pose.position.y = final_clusters[i]->GetMaxPoint().y;
-      pictogram_cluster.pose.position.z = final_clusters[i]->GetMaxPoint().z;
-      tf::Quaternion quat(0.0, -0.7, 0.0, 0.7);
-      tf::quaternionTFToMsg(quat, pictogram_cluster.pose.orientation);
-      pictogram_cluster.size = 4;
-      std_msgs::ColorRGBA color;
-      color.a = 1;
-      color.r = 1;
-      color.g = 1;
-      color.b = 1;
-      pictogram_cluster.color = color;
-      pictogram_cluster.character = std::to_string(i);
-      // PICTO
-
-      // pcl::PointXYZ min_point = final_clusters[i]->GetMinPoint();
-      // pcl::PointXYZ max_point = final_clusters[i]->GetMaxPoint();
-      pcl::PointXYZ center_point = final_clusters[i]->GetCentroid();
-      geometry_msgs::Point centroid;
-      centroid.x = center_point.x;
-      centroid.y = center_point.y;
-      centroid.z = center_point.z;
-      bounding_box.header = _velodyne_header;
-      polygon.header = _velodyne_header;
-
-      if (final_clusters[i]->IsValid())
-      {
-
-        in_out_centroids.points.push_back(centroid);
-
-        autoware_msgs::CloudCluster cloud_cluster;
-        final_clusters[i]->ToROSMessage(_velodyne_header, cloud_cluster);
-        in_out_clusters.clusters.push_back(cloud_cluster);
-      }
+      autoware_msgs::CloudCluster cloud_cluster;
+      final_clusters[i]->ToROSMessage(_velodyne_header, cloud_cluster);
+      in_out_clusters.clusters.push_back(cloud_cluster);
     }
+  }
 }
 
 void removeFloor(const pcl::PointCloud<pcl::PointXYZ>::Ptr in_cloud_ptr,
@@ -718,7 +751,7 @@ void removeFloor(const pcl::PointCloud<pcl::PointXYZ>::Ptr in_cloud_ptr,
   seg.setAxis(Eigen::Vector3f(0, 0, 1));
   seg.setEpsAngle(in_floor_max_angle);
 
-  seg.setDistanceThreshold(in_max_height);  // floor distance
+  seg.setDistanceThreshold(in_max_height); // floor distance
   seg.setOptimizeCoefficients(true);
   seg.setInputCloud(in_cloud_ptr);
   seg.segment(*inliers, *coefficients);
@@ -731,11 +764,11 @@ void removeFloor(const pcl::PointCloud<pcl::PointXYZ>::Ptr in_cloud_ptr,
   pcl::ExtractIndices<pcl::PointXYZ> extract;
   extract.setInputCloud(in_cloud_ptr);
   extract.setIndices(inliers);
-  extract.setNegative(true);  // true removes the indices, false leaves only the indices
+  extract.setNegative(true); // true removes the indices, false leaves only the indices
   extract.filter(*out_nofloor_cloud_ptr);
 
   // EXTRACT THE FLOOR FROM THE CLOUD
-  extract.setNegative(false);  // true removes the indices, false leaves only the indices
+  extract.setNegative(false); // true removes the indices, false leaves only the indices
   extract.filter(*out_onlyfloor_cloud_ptr);
 }
 
@@ -744,7 +777,7 @@ void downsampleCloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr in_cloud_ptr,
 {
   pcl::VoxelGrid<pcl::PointXYZ> sor;
   sor.setInputCloud(in_cloud_ptr);
-  sor.setLeafSize((float) in_leaf_size, (float) in_leaf_size, (float) in_leaf_size);
+  sor.setLeafSize((float)in_leaf_size, (float)in_leaf_size, (float)in_leaf_size);
   sor.filter(*out_cloud_ptr);
 }
 
@@ -771,7 +804,8 @@ void differenceNormalsSegmentation(const pcl::PointCloud<pcl::PointXYZ>::Ptr in_
   if (in_cloud_ptr->isOrganized())
   {
     tree.reset(new pcl::search::OrganizedNeighbor<pcl::PointXYZ>());
-  } else
+  }
+  else
   {
     tree.reset(new pcl::search::KdTree<pcl::PointXYZ>(false));
   }
@@ -811,7 +845,7 @@ void differenceNormalsSegmentation(const pcl::PointCloud<pcl::PointXYZ>::Ptr in_
 
   pcl::ConditionOr<pcl::PointNormal>::Ptr range_cond(new pcl::ConditionOr<pcl::PointNormal>());
   range_cond->addComparison(pcl::FieldComparison<pcl::PointNormal>::ConstPtr(
-    new pcl::FieldComparison<pcl::PointNormal>("curvature", pcl::ComparisonOps::GT, angle_threshold)));
+      new pcl::FieldComparison<pcl::PointNormal>("curvature", pcl::ComparisonOps::GT, angle_threshold)));
   // Build the filter
   pcl::ConditionalRemoval<pcl::PointNormal> cond_removal;
   cond_removal.setCondition(range_cond);
@@ -831,7 +865,7 @@ void removePointsUpTo(const pcl::PointCloud<pcl::PointXYZ>::Ptr in_cloud_ptr,
   out_cloud_ptr->points.clear();
   for (unsigned int i = 0; i < in_cloud_ptr->points.size(); i++)
   {
-    float origin_distance = sqrt(pow(in_cloud_ptr->points[i].x, 2) + pow(in_cloud_ptr->points[i].y, 2));
+    float origin_distance = sqrt(pow(in_cloud_ptr->points[i].x, 2) + pow(in_cloud_ptr->points[i].y, 2)); // 水平距离
     if (origin_distance > in_distance)
     {
       out_cloud_ptr->points.push_back(in_cloud_ptr->points[i]);
@@ -839,7 +873,7 @@ void removePointsUpTo(const pcl::PointCloud<pcl::PointXYZ>::Ptr in_cloud_ptr,
   }
 }
 
-void velodyne_callback(const sensor_msgs::PointCloud2ConstPtr& in_sensor_cloud)
+void velodyne_callback(const sensor_msgs::PointCloud2ConstPtr &in_sensor_cloud)
 {
   //_start = std::chrono::system_clock::now();
 
@@ -851,6 +885,7 @@ void velodyne_callback(const sensor_msgs::PointCloud2ConstPtr& in_sensor_cloud)
     pcl::PointCloud<pcl::PointXYZ>::Ptr removed_points_cloud_ptr(new pcl::PointCloud<pcl::PointXYZ>);
     pcl::PointCloud<pcl::PointXYZ>::Ptr downsampled_cloud_ptr(new pcl::PointCloud<pcl::PointXYZ>);
     pcl::PointCloud<pcl::PointXYZ>::Ptr inlanes_cloud_ptr(new pcl::PointCloud<pcl::PointXYZ>);
+    pcl::PointCloud<pcl::PointXYZ>::Ptr inylanes_cloud_ptr(new pcl::PointCloud<pcl::PointXYZ>);
     pcl::PointCloud<pcl::PointXYZ>::Ptr nofloor_cloud_ptr(new pcl::PointCloud<pcl::PointXYZ>);
     pcl::PointCloud<pcl::PointXYZ>::Ptr onlyfloor_cloud_ptr(new pcl::PointCloud<pcl::PointXYZ>);
     pcl::PointCloud<pcl::PointXYZ>::Ptr diffnormals_cloud_ptr(new pcl::PointCloud<pcl::PointXYZ>);
@@ -864,7 +899,7 @@ void velodyne_callback(const sensor_msgs::PointCloud2ConstPtr& in_sensor_cloud)
 
     _velodyne_header = in_sensor_cloud->header;
 
-    if (_remove_points_upto > 0.0)
+    if (_remove_points_upto > 0.0) // 去除周围
     {
       removePointsUpTo(current_sensor_cloud_ptr, removed_points_cloud_ptr, _remove_points_upto);
     }
@@ -873,29 +908,35 @@ void velodyne_callback(const sensor_msgs::PointCloud2ConstPtr& in_sensor_cloud)
       removed_points_cloud_ptr = current_sensor_cloud_ptr;
     }
 
-    if (_downsample_cloud)
+    if (_downsample_cloud) // 叶化稀疏
       downsampleCloud(removed_points_cloud_ptr, downsampled_cloud_ptr, _leaf_size);
     else
+    {
       downsampled_cloud_ptr = removed_points_cloud_ptr;
-
-    clipCloud(downsampled_cloud_ptr, clipped_cloud_ptr, _clip_min_height, _clip_max_height);
-
+    }
+   
+    clipCloud(downsampled_cloud_ptr, clipped_cloud_ptr, _clip_min_height, _clip_max_height); // 高度
+   
     if (_keep_lanes)
-      keepLanePoints(clipped_cloud_ptr, inlanes_cloud_ptr, _keep_lane_left_distance, _keep_lane_right_distance);
+     { keepLanePoints(clipped_cloud_ptr, inlanes_cloud_ptr, _keep_lane_right_distance,_keep_lane_left_distance); // x
+    
+        keep_y_Points(inlanes_cloud_ptr,inylanes_cloud_ptr,_keep_ylane_left_distance,_keep_ylane_right_distance);
+      }
     else
-      inlanes_cloud_ptr = clipped_cloud_ptr;
+      inylanes_cloud_ptr = clipped_cloud_ptr;
 
     if (_remove_ground)
     {
-      removeFloor(inlanes_cloud_ptr, nofloor_cloud_ptr, onlyfloor_cloud_ptr);
-      publishCloud(&_pub_ground_cloud, onlyfloor_cloud_ptr);
+      removeFloor(inylanes_cloud_ptr, nofloor_cloud_ptr, onlyfloor_cloud_ptr, _floor_distance_);
+      publishCloud(&_pub_ground_cloud, onlyfloor_cloud_ptr); //
     }
     else
     {
-      nofloor_cloud_ptr = inlanes_cloud_ptr;
+      nofloor_cloud_ptr = inylanes_cloud_ptr;
     }
+    
 
-    publishCloud(&_pub_points_lanes_cloud, nofloor_cloud_ptr);
+    publishCloud(&_pub_points_lanes_cloud, nofloor_cloud_ptr); // /points_lanes
 
     if (_use_diffnormals)
       differenceNormalsSegmentation(nofloor_cloud_ptr, diffnormals_cloud_ptr);
@@ -905,17 +946,18 @@ void velodyne_callback(const sensor_msgs::PointCloud2ConstPtr& in_sensor_cloud)
     segmentByDistance(diffnormals_cloud_ptr, colored_clustered_cloud_ptr, centroids,
                       cloud_clusters);
 
-    publishColorCloud(&_pub_cluster_cloud, colored_clustered_cloud_ptr);
+    publishColorCloud(&_pub_cluster_cloud, colored_clustered_cloud_ptr); // /points_cluster
 
     centroids.header = _velodyne_header;
 
-    publishCentroids(&_centroid_pub, centroids, _output_frame, _velodyne_header);
+    publishCentroids(&_centroid_pub, centroids, _output_frame, _velodyne_header); // /cluster_centroids
 
     cloud_clusters.header = _velodyne_header;
 
     publishCloudClusters(&_pub_clusters_message, cloud_clusters, _output_frame, _velodyne_header);
 
     _using_sensor_cloud = false;
+    // cout<<"cloud_clusters"<<cloud_clusters.clusters.size()<<endl;
   }
 }
 int main(int argc, char **argv)
@@ -929,16 +971,14 @@ int main(int argc, char **argv)
   tf::StampedTransform transform;
   tf::TransformListener listener;
 
-
-
   _transform = &transform;
   _transform_listener = &listener;
 
-// #if (CV_MAJOR_VERSION == 3)
+#if (CV_MAJOR_VERSION == 3)
   generateColors(_colors, 255);
-// #else
-//   cv::generateColors(_colors, 255);
-// #endif
+#else
+  generateColors(_colors, 255);
+#endif
 
   _pub_cluster_cloud = h.advertise<sensor_msgs::PointCloud2>("/points_cluster", 1);
   _pub_ground_cloud = h.advertise<sensor_msgs::PointCloud2>("/points_ground", 1);
@@ -959,7 +999,7 @@ int main(int argc, char **argv)
   else
   {
     ROS_INFO("euclidean_cluster > No points node received, defaulting to points_raw, you can use "
-               "_points_node:=YOUR_TOPIC");
+             "_points_node:=YOUR_TOPIC");
     points_topic = "/points_raw";
   }
 
@@ -979,7 +1019,7 @@ int main(int argc, char **argv)
   ROS_INFO("[%s] remove_ground: %d", __APP_NAME__, _remove_ground);
   private_nh.param("leaf_size", _leaf_size, 0.1);
   ROS_INFO("[%s] leaf_size: %f", __APP_NAME__, _leaf_size);
-  private_nh.param("cluster_size_min", _cluster_size_min, 20);
+  private_nh.param("cluster_size_min", _cluster_size_min, 2);
   ROS_INFO("[%s] cluster_size_min %d", __APP_NAME__, _cluster_size_min);
   private_nh.param("cluster_size_max", _cluster_size_max, 100000);
   ROS_INFO("[%s] cluster_size_max: %d", __APP_NAME__, _cluster_size_max);
@@ -994,7 +1034,13 @@ int main(int argc, char **argv)
   private_nh.param("keep_lane_left_distance", _keep_lane_left_distance, 5.0);
   ROS_INFO("[%s] keep_lane_left_distance: %f", __APP_NAME__, _keep_lane_left_distance);
   private_nh.param("keep_lane_right_distance", _keep_lane_right_distance, 5.0);
-  ROS_INFO("[%s] keep_lane_right_distance: %f", __APP_NAME__, _keep_lane_right_distance);
+  ROS_INFO("[%s] keep_lane_right_distance: %f", __APP_NAME__, _keep_lane_right_distance); 
+
+  private_nh.param("keep_ylane_left_distance", _keep_ylane_left_distance, 5.0);
+  ROS_INFO("[%s] keep_ylane_left_distance: %f", __APP_NAME__, _keep_ylane_left_distance);
+  private_nh.param("keep_ylane_right_distance", _keep_ylane_right_distance, 5.0);
+  ROS_INFO("[%s] keep_ylane_right_distance: %f", __APP_NAME__, _keep_ylane_right_distance);
+
   private_nh.param("max_boundingbox_side", _max_boundingbox_side, 10.0);
   ROS_INFO("[%s] max_boundingbox_side: %f", __APP_NAME__, _max_boundingbox_side);
   private_nh.param("cluster_merge_threshold", _cluster_merge_threshold, 1.5);
@@ -1014,12 +1060,15 @@ int main(int argc, char **argv)
   private_nh.param("use_multiple_thres", _use_multiple_thres, false);
   ROS_INFO("[%s] use_multiple_thres: %d", __APP_NAME__, _use_multiple_thres);
 
+  private_nh.param("floor_distance", _floor_distance_, 0.75);
+  ROS_INFO("[%s] floor_distance: %f", __APP_NAME__, _floor_distance_);
+
   std::string str_distances;
   std::string str_ranges;
   private_nh.param("clustering_distances", str_distances, std::string("[0.5,1.1,1.6,2.1,2.6]"));
   ROS_INFO("[%s] clustering_distances: %s", __APP_NAME__, str_distances.c_str());
   private_nh.param("clustering_ranges", str_ranges, std::string("[15,30,45,60]"));
-    ROS_INFO("[%s] clustering_ranges: %s", __APP_NAME__, str_ranges.c_str());
+  ROS_INFO("[%s] clustering_ranges: %s", __APP_NAME__, str_ranges.c_str());
 
   if (_use_multiple_thres)
   {

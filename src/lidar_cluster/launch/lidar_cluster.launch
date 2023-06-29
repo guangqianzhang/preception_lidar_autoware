@@ -1,32 +1,36 @@
 <!-- -->
 <launch>
-  <arg name="points_node" default="/middle_m1_point_cloud" />
-  <arg name="remove_ground" default="true" />
+  <arg name="points_node" default="/rslidar_points" />
+  <arg name="remove_ground" default="false" />
   <arg name="downsample_cloud" default="false" /> 
-  <arg name="leaf_size" default="0.1" />
+  <arg name="leaf_size" default="0.01" />
   <arg name="cluster_size_min" default="3" />
-  <arg name="cluster_size_max" default="20000" />
+  <arg name="cluster_size_max" default="200" />
   <arg name="sync" default="false" />
   <arg name="use_diffnormals" default="true" />
   <arg name="pose_estimation" default="true" />
-  <arg name="clip_min_height" default="-1.3" />
-  <arg name="clip_max_height" default="0.5" />
-
+  <arg name="clip_min_height" default="-2" />
+  <arg name="clip_max_height" default="5" />
+ <arg name="floor_distance" default="1.0"/>
 
 
   <arg name="keep_lanes" default="true" />
-  <arg name="keep_lane_left_distance" default="15" />
-  <arg name="keep_lane_right_distance" default="15" />
+  <arg name="keep_lane_left_distance" default="1" />
+  <arg name="keep_lane_right_distance" default="7" />
+
+    <arg name="keep_ylane_left_distance" default="50" /><!--shang-->
+  <arg name="keep_ylane_right_distance" default="0" /> <!--下-->
+
   <arg name="max_boundingbox_side" default="10" />
-  <arg name="cluster_merge_threshold" default="1.5" />
+  <arg name="cluster_merge_threshold" default="0.5" />
   <arg name="clustering_distance" default="0.75" />
 
 
 
 
-  <arg name="output_frame" default="velo_link" />
-  <arg name="remove_points_upto" default="0.0" />
-  <arg name="use_gpu" default="false" />
+  <arg name="output_frame" default="rslidar" />
+  <arg name="remove_points_upto" default="1.0" />
+  <arg name="use_gpu" default="true" />
   <arg name="use_multiple_thres" default="true"/>
   <arg name="clustering_ranges" default="[15,30,45,60]"/>
   <arg name="clustering_distances"
@@ -36,6 +40,8 @@
         name="lidar_euclidean_cluster_detect" output="screen">
     <param name="points_node"
            value="$(arg points_node)"/> 
+<param name="floor_distance" value="$(arg floor_distance)"/>
+
     <param name="remove_ground" value="$(arg remove_ground)"/>
     <param name="downsample_cloud" value="$(arg downsample_cloud)"/>
     <param name="leaf_size" value="$(arg leaf_size)"/>
@@ -44,8 +50,12 @@
     <param name="use_diffnormals" value="$(arg use_diffnormals)"/>
     <param name="pose_estimation" value="$(arg pose_estimation)"/>
     <param name="keep_lanes" value="$(arg keep_lanes)"/>
+
     <param name="keep_lane_left_distance" value="$(arg keep_lane_left_distance)"/>
     <param name="keep_lane_right_distance" value="$(arg keep_lane_right_distance)"/>
+     <param name="keep_ylane_left_distance" value="$(arg keep_ylane_left_distance)"/>
+    <param name="keep_ylane_right_distance" value="$(arg keep_ylane_right_distance)"/>
+
     <param name="max_boundingbox_side" value="$(arg max_boundingbox_side)"/>
     <param name="clip_min_height" value="$(arg clip_min_height)"/>
     <param name="clip_max_height" value="$(arg clip_max_height)"/>
@@ -64,7 +74,7 @@
           output="screen" ns="/detection/lidar_detector">
       <param name="objects_src_topic" value="/objects"/>
    </node>
-   <node name="rviz" pkg="rviz" type="rviz" args="-d $(find lidar_cluster)/rviz/lidar_cluster.rviz" required="true" />
+   <node name="rviz" pkg="rviz" type="rviz" args="-d $(find lidar_cluster)/rviz/lidar_cluster2.rviz" required="true" />
 
 
 </launch>
